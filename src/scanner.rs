@@ -1,8 +1,6 @@
-use crate::models::TransactionRecord;
-use chrono::{naive, DateTime, NaiveDate, NaiveDateTime, Utc};
-use ethers::core::k256::elliptic_curve::rand_core::block;
-use ethers::providers::{Middleware, Provider};
-use ethers::types::{BlockNumber, Transaction};
+use crate::models::{TransactionRecord, TxStorage};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use ethers::providers::Middleware;
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 
@@ -10,11 +8,11 @@ pub async fn scan_block<M>(
     provider: Arc<M>,
     start_block: u64,
     end_block: u64,
-) -> Result<Vec<TransactionRecord>, M::Error>
+) -> Result<TxStorage, M::Error>
 where
     M: Middleware + 'static,
 {
-    let mut result = Vec::new();
+    let mut result = TxStorage::new();
 
     for block_number in start_block..end_block {
         if let Some(block) = provider.get_block_with_txs(block_number).await? {
@@ -40,12 +38,21 @@ where
                     block_number: block_number,
                     timestamp: timestamp_str.clone(),
                 };
-                result.push(record);
+                result.add_transaction(tx.from, tx.to, record);
             }
         }
     }
     Ok(result)
 }
+
+// pub fn save_to_csv(records: &Vec<TransactionRecord>, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+//     let mut wtr = Writer::from_path(path)?;
+//     for rec in records {
+//         wtr.serialize(rec)?;
+//     }
+//     wtr.flush()?;
+//     Ok(())
+// }
 
 fn wei_to_eth(wei: u128) -> f64 {
     wei as f64 / 1e18

@@ -1,25 +1,26 @@
-use crate::models::{TransactionRecord, TxStorage};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use crate::models::{SharedTxStorage, TransactionRecord};
+use chrono::{DateTime, Utc};
 use ethers::providers::Middleware;
-use log::{debug, error, info, warn};
+use log::info;
 use std::sync::Arc;
 
 pub async fn scan_block<M>(
     provider: Arc<M>,
     start_block: u64,
     end_block: u64,
-) -> Result<TxStorage, M::Error>
+    storage: SharedTxStorage,
+) -> Result<(), M::Error>
 where
     M: Middleware + 'static,
 {
-    let mut result = TxStorage::new();
-
+    let storage_clone = Arc::clone(&storage);
     for block_number in start_block..end_block {
         if let Some(block) = provider.get_block_with_txs(block_number).await? {
-            let naive =
-                NaiveDateTime::from_timestamp_opt(block.timestamp.as_u64() as i64, 0).unwrap();
-            let date_time: DateTime<Utc> = DateTime::from_utc(naive, Utc);
-            let timestamp_str = date_time.to_rfc3339();
+            let ts: i64 = block.timestamp.as_u64() as i64;
+            let datetime: DateTime<Utc> = DateTime::<Utc>::from_timestamp(ts, 0)
+                .expect("invalid timestamp");
+            let timestamp_str = datetime.to_rfc3339();
+
 
             info!(
                 "Scanning block {} ({} transactions)",
@@ -38,11 +39,11 @@ where
                     block_number: block_number,
                     timestamp: timestamp_str.clone(),
                 };
-                result.add_transaction(tx.from, tx.to, record);
+                storage_clone.add_transaction(tx.from, tx.to, record).await;
             }
         }
     }
-    Ok(result)
+    Ok(())
 }
 
 // pub fn save_to_csv(records: &Vec<TransactionRecord>, path: &str) -> Result<(), Box<dyn std::error::Error>> {

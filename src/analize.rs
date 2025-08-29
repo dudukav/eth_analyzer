@@ -1,16 +1,17 @@
+use std::result;
+
 use crate::{
-    config::{K_LOCAL, PERC, THRESHOLD_TIME},
+    config::{K_LOCAL, K_LOCAL_FEE, PERC, THRESHOLD_TIME},
     models::{AnalysisResult, Anomaly, Severity, SharedTxStorage, TransactionRecord},
 };
 use chrono::{DateTime, Duration, Utc};
-// use dashmap::DashMap;
-// use ethers::types::Address;
-// use std::sync::Arc;
+use std::{fs, collections::HashSet};
 
 pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
     let mut result: Vec<AnalysisResult> = Vec::new();
 
-    let all_txs = storage.all_txs.write().await;
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+    let all_txs = storage.all_txs.read().await;
     let global_thershold = global_threshold(storage).await;
     for tx in all_txs.iter() {
         let sender = tx.from.clone();
@@ -18,8 +19,6 @@ pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
 
         let local_flag = local_mean > 0.0 && tx.value > K_LOCAL * local_mean;
         let global_flag = tx.value > global_thershold;
-
-        let mut anomalies = Vec::new();
 
         match (local_flag, global_flag) {
             (true, true) => anomalies.push(Anomaly::LargeTx {
@@ -32,13 +31,13 @@ pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
             }),
             (false, false) => {}
         };
+    }
 
-        if !anomalies.is_empty() {
-            result.push(AnalysisResult {
-                anomalies: anomalies,
-                patterns: vec![],
-            });
-        }
+    if !anomalies.is_empty() {
+        result.push(AnalysisResult {
+            anomalies: anomalies,
+            patterns: vec![],
+        });
     }
 
     result
@@ -68,10 +67,12 @@ pub async fn detect_high_frequency(storage: &SharedTxStorage) -> Vec<AnalysisRes
         }
     }
 
-    result.push(AnalysisResult {
-        anomalies: anomalies,
-        patterns: vec![],
-    });
+    if !anomalies.is_empty() {
+        result.push(AnalysisResult {
+            anomalies: anomalies,
+            patterns: vec![],
+        });
+    }
 
     result
 }
@@ -119,22 +120,126 @@ pub async fn detect_structuring(storage: &SharedTxStorage) -> Vec<AnalysisResult
         };
     }
 
-    result.push(AnalysisResult {
-        anomalies: anomalies,
-        patterns: vec![],
-    });
+    if !anomalies.is_empty() {
+        result.push(AnalysisResult {
+            anomalies: anomalies,
+            patterns: vec![],
+        });
+    }
 
     result
 }
 
-fn percentile(values: &Vec<f64>, perc: &f64) -> f64 {
+pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    let mut result: Vec<AnalysisResult> = Vec::new();
+
+    let all_txs = storage.all_txs.read().await;
+    let all_fees: Vec<f64> = all_txs
+        .iter()
+        .map(|tx| tx.gas_price_gwei * tx.gas as f64 / 1e9)
+        .collect();
+    let global_threshold = percentile(&all_fees);
+
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+    for tx in all_txs.iter() {
+        let sender = &tx.from;
+        let fee_eth = tx.gas_price_gwei * tx.gas as f64 / 1e9;
+        let local_mean = local_mean_fee(storage, sender);
+
+        let local_flag = local_mean > 0.0 && fee_eth > K_LOCAL_FEE * local_mean;
+        let global_flag = fee_eth > global_threshold;
+
+        match (local_flag, global_flag) {
+            (true, true) => anomalies.push(Anomaly::HighFee {
+                tx_hash: tx.hash.clone(),
+                fee_eth: fee_eth,
+                severity: Severity::Strong,
+            }),
+            (true, false) | (false, true) => anomalies.push(Anomaly::HighFee {
+                tx_hash: tx.hash.clone(),
+                fee_eth: fee_eth,
+                severity: Severity::Weak,
+            }),
+            (false, false) => {}
+        }
+    }
+    if !anomalies.is_empty() {
+        result.push(AnalysisResult {
+            anomalies: anomalies,
+            patterns: vec![],
+        });
+    }
+
+    result
+}
+
+pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    let mut result: Vec<AnalysisResult> = Vec::new();
+
+    let blacklist = load_blacklist("config/blacklist.json");
+    let all_txs = storage.all_txs.read().await;
+
+    result
+}
+
+pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_regular_payments(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_batch_payments(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_dext_trade(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_nft_activity(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_liquid_provider(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_whales(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_active_traders(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_exchanges(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+pub async fn detect_arbitrage(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
+    // TODO
+    unimplemented!()
+}
+
+fn percentile(values: &Vec<f64>) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
 
     let mut sorted: Vec<f64> = values.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let idx = ((perc / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
+    let idx = ((PERC / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
     sorted[idx]
 }
 
@@ -155,9 +260,9 @@ fn local_mean(storage: &SharedTxStorage, sender: &String) -> f64 {
 }
 
 async fn global_threshold(storage: &SharedTxStorage) -> f64 {
-    let all_txs = storage.all_txs.write().await;
+    let all_txs = storage.all_txs.read().await;
     let all_values: Vec<f64> = all_txs.iter().map(|tx| tx.value).collect();
-    let global_thershold = percentile(&all_values, &PERC);
+    let global_thershold = percentile(&all_values);
 
     global_thershold
 }
@@ -176,10 +281,24 @@ fn txs_in_interval(
 }
 
 fn local_mean_fee(storage: &SharedTxStorage, sender: &str) -> f64 {
-    storage.by_sender.get(sender)
+    storage
+        .by_sender
+        .get(sender)
         .map(|txs| {
-            let fees: Vec<f64> = txs.iter().map(|tx| tx.gas_price_gwei * tx.gas as f64 / 1e9).collect();
-            if fees.is_empty() { 0.0 } else { fees.iter().sum::<f64>() / fees.len() as f64 }
+            let fees: Vec<f64> = txs
+                .iter()
+                .map(|tx| tx.gas_price_gwei * tx.gas as f64 / 1e9)
+                .collect();
+            if fees.is_empty() {
+                0.0
+            } else {
+                fees.iter().sum::<f64>() / fees.len() as f64
+            }
         })
         .unwrap_or(0.0)
+}
+
+pub fn load_blacklist(path: &str) -> HashSet<String> {
+    let data = fs::read_to_string(path).expect("Failed to read blacklist file");
+    serde_json::from_str(&data).expect("Invalid blacklist JSON format")
 }

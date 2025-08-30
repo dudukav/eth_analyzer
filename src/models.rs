@@ -14,6 +14,7 @@ pub struct TransactionRecord {
     pub gas_price_gwei: f64,
     pub block_number: u64,
     pub timestamp: String,
+    pub input: String,
 }
 
 pub struct TxStorage {
@@ -78,8 +79,15 @@ pub enum Anomaly {
         fee_eth: f64,
         severity: Severity,
     },
-    BlacklistedAddress,
-    UnusualOp,
+    BlacklistedAddress {
+        tx_hash: String,
+        addres: String,
+    },
+    UnusualOp {
+        tx_hash: String,
+        reasons: Vec<String>,
+        severiry: Severity,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -1,7 +1,7 @@
 mod analize;
+mod config;
 mod models;
 mod scanner;
-mod config;
 mod viz;
 
 use ethers::providers::{Http, Middleware, Provider};
@@ -21,6 +21,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(TxStorage::new());
     let records = scan_block(provider, start_block, end_block, storage);
-    
+
     Ok(())
 }

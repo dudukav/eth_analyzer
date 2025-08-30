@@ -1,9 +1,9 @@
 use crate::models::{SharedTxStorage, TransactionRecord};
 use chrono::{DateTime, Utc};
-use ethers::{providers::Middleware, };
-use log::info;
-use std::sync::Arc;
 use csv::Writer;
+use ethers::{providers::Middleware, utils::hex};
+use log::info;
+use std::{fmt::format, sync::Arc};
 
 pub async fn scan_block<M>(
     provider: Arc<M>,
@@ -38,6 +38,7 @@ where
                     gas_price_gwei: wei_to_gwei(tx.gas_price.unwrap_or_default().as_u128()),
                     block_number: block_number,
                     timestamp: timestamp_str.clone(),
+                    input: format!("0x{}", hex::encode(&tx.input)),
                 };
                 storage_clone.add_transaction(tx.from, tx.to, record).await;
             }
@@ -46,7 +47,10 @@ where
     Ok(())
 }
 
-pub fn save_to_csv(records: &Vec<TransactionRecord>, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_to_csv(
+    records: &Vec<TransactionRecord>,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut wtr = Writer::from_path(path)?;
     for rec in records {
         wtr.serialize(rec)?;

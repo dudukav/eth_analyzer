@@ -1,11 +1,14 @@
 use std::result;
 
 use crate::{
-    config::{K_LOCAL, K_LOCAL_FEE, PERC, THRESHOLD_TIME},
+    config::{
+        APPROVE_THRESHOLD, INTERNAL_THRESHOLD, KNOWN_SELECTORS, K_LOCAL, K_LOCAL_FEE, PERC,
+        THRESHOLD_TIME,
+    },
     models::{AnalysisResult, Anomaly, Severity, SharedTxStorage, TransactionRecord},
 };
 use chrono::{DateTime, Duration, Utc};
-use std::{fs, collections::HashSet};
+use std::{collections::HashSet, fs};
 
 pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
     let mut result: Vec<AnalysisResult> = Vec::new();
@@ -178,13 +181,108 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Analysi
 
     let blacklist = load_blacklist("config/blacklist.json");
     let all_txs = storage.all_txs.read().await;
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+
+    for tx in all_txs.iter() {
+        if blacklist.contains(&tx.from) {
+            anomalies.push(Anomaly::BlacklistedAddress {
+                tx_hash: tx.hash.clone(),
+                addres: tx.from.clone(),
+            });
+        }
+
+        if let Some(to) = &tx.to {
+            if blacklist.contains(to) {
+                anomalies.push(Anomaly::BlacklistedAddress {
+                    tx_hash: tx.hash.clone(),
+                    addres: to.clone(),
+                });
+            }
+        }
+    }
+
+    if !anomalies.is_empty() {
+        result.push(AnalysisResult {
+            anomalies: anomalies,
+            patterns: vec![],
+        });
+    }
 
     result
 }
 
 pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+    let mut result: Vec<AnalysisResult> = Vec::new();
+
+    let all_txs = storage.all_txs.read().await;
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+    for tx in all_txs.iter() {
+        let mut reasons: Vec<String> = Vec::new();
+
+        let selector = &tx.input.get(0..10).unwrap_or("");
+        if !selector.is_empty() && !KNOWN_SELECTORS.contains(selector) {
+            reasons.push(format!("Unknown function selector: {}", selector));
+        }
+
+        if selector.to_string() == "0x095ea7b3" && tx.value > APPROVE_THRESHOLD {
+            reasons.push(format!("Suspiciously large approve: {}", tx.value));
+        }
+
+        if selector.to_string() == "0xa9059cbb" {
+            let known_tokens = storage
+                .by_sender
+                .get(&tx.from)
+                .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if let Some(to) = &tx.to {
+                if !known_tokens.contains(to) {
+                    reasons.push(format!("Transfer to unusual token: {}", to));
+                }
+            }
+        }
+
+        if let Some(to) = &tx.to {
+            if to == "0x0000000000000000000000000000000000000000"
+                || to == "0x000000000000000000000000000000000000dEaD"
+            {
+                reasons.push("Token burn transaction".to_string());
+            }
+        }
+
+        if let Some(to) = &tx.to {
+            let seen_contracts = storage
+                .by_sender
+                .get(&tx.from)
+                .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if !seen_contracts.contains(to) {
+                reasons.push(format!("Interaction with new contract: {}", to));
+            }
+        }
+
+        if let Some(to) = &tx.to {
+            let count = storage.by_reciever.get(to).map(|v| v.len()).unwrap_or(0);
+            if count < 3 {
+                reasons.push(format!("Interaction with low-activity contract: {}", to));
+            }
+        }
+
+        if reasons.len() > 3 {
+            anomalies.push(Anomaly::UnusualOp {
+                tx_hash: tx.hash.clone(),
+                reasons: reasons,
+                severiry: Severity::Strong,
+            });
+        } else {
+            anomalies.push(Anomaly::UnusualOp {
+                tx_hash: tx.hash.clone(),
+                reasons: reasons,
+                severiry: Severity::Weak,
+            });
+        }
+    }
+
+    result
 }
 
 pub async fn detect_regular_payments(storage: &SharedTxStorage) -> Vec<AnalysisResult> {

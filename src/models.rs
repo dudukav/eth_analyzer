@@ -63,44 +63,73 @@ pub enum Anomaly {
     LargeTx {
         tx_hash: String,
         severity: Severity,
+        reasons: Vec<String>,
     },
     HighFrequency {
         sender: String,
         count: usize,
+        reasons: Vec<String>,
     },
-    BurstActivity,
+    BurstActivity {
+        sender: String,
+        reasons: Vec<String>,
+    },
     Structuring {
         sender: String,
         count: usize,
         severity: Severity,
+        reasons: Vec<String>,
     },
     HighFee {
         tx_hash: String,
         fee_eth: f64,
         severity: Severity,
+        reasons: Vec<String>,
     },
     BlacklistedAddress {
         tx_hash: String,
         addres: String,
+        reasons: Vec<String>,
     },
     UnusualOp {
         tx_hash: String,
-        reasons: Vec<String>,
         severiry: Severity,
+        reasons: Vec<String>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum BusinessPattern {
-    RegularPayments,
-    BatchPayments,
-    DEXTrade,
-    NFTActivity,
+    RegularPayments {
+        sender: String,
+        message: String,
+    },
+    BatchPayments {
+        sender: String,
+        count: usize,
+        message: String,
+    },
+    DEXTrade {
+        dex: String,
+        message: String,
+    },
+    NFTActivity {
+        tx_hash: String,
+        message: String,
+    },
     LiquidityProvider,
-    Whales,
-    ActiveTraders,
-    Exchanges,
-    Arbitrage,
+    Whales {
+        sender: String,
+        reciever: String,
+    },
+    ActiveTraders {
+        sender: String,
+        message: String,
+    },
+    Arbitrage {
+        sender: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Serialize, Clone)]

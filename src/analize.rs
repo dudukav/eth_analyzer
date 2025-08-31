@@ -1,18 +1,17 @@
-use std::result;
-
 use crate::{
-    config::{
-        APPROVE_THRESHOLD, INTERNAL_THRESHOLD, KNOWN_SELECTORS, K_LOCAL, K_LOCAL_FEE, PERC,
-        THRESHOLD_TIME,
+    config::{APPROVE_THRESHOLD, KNOWN_SELECTORS, K_LOCAL, K_LOCAL_FEE, PERC, THRESHOLD_TIME},
+    models::{
+        Anomaly, BusinessPattern, Severity, SharedTxStorage, TransactionRecord,
     },
-    models::{AnalysisResult, Anomaly, Severity, SharedTxStorage, TransactionRecord},
 };
-use chrono::{DateTime, Duration, Utc};
-use std::{collections::HashSet, fs};
+use chrono::{DateTime, Duration, Timelike, Utc};
+use ethers::types::H160;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+};
 
-pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    let mut result: Vec<AnalysisResult> = Vec::new();
-
+pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let mut anomalies: Vec<Anomaly> = Vec::new();
     let all_txs = storage.all_txs.read().await;
     let global_thershold = global_threshold(storage).await;
@@ -27,28 +26,21 @@ pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
             (true, true) => anomalies.push(Anomaly::LargeTx {
                 tx_hash: tx.hash.clone(),
                 severity: Severity::Strong,
+                reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
             }),
             (true, false) | (false, true) => anomalies.push(Anomaly::LargeTx {
                 tx_hash: tx.hash.clone(),
                 severity: Severity::Weak,
+                reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
             }),
             (false, false) => {}
         };
     }
 
-    if !anomalies.is_empty() {
-        result.push(AnalysisResult {
-            anomalies: anomalies,
-            patterns: vec![],
-        });
-    }
-
-    result
+    anomalies
 }
 
-pub async fn detect_high_frequency(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    let mut result: Vec<AnalysisResult> = Vec::new();
-
+pub async fn detect_high_frequency(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let end_interval = Utc::now();
     let start_interval = end_interval - Duration::hours(1);
 
@@ -66,23 +58,15 @@ pub async fn detect_high_frequency(storage: &SharedTxStorage) -> Vec<AnalysisRes
             anomalies.push(Anomaly::HighFrequency {
                 sender: sender.to_string(),
                 count: count,
+                reasons: vec![format!("Too many transactions per hour: {}", &count)],
             });
         }
     }
 
-    if !anomalies.is_empty() {
-        result.push(AnalysisResult {
-            anomalies: anomalies,
-            patterns: vec![],
-        });
-    }
-
-    result
+    anomalies
 }
 
-pub async fn detect_structuring(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    let mut result: Vec<AnalysisResult> = Vec::new();
-
+pub async fn detect_structuring(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let end_interval = Utc::now();
     let start_interval = end_interval - Duration::hours(1);
 
@@ -113,29 +97,28 @@ pub async fn detect_structuring(storage: &SharedTxStorage) -> Vec<AnalysisResult
                 sender: sender.to_string(),
                 count: count,
                 severity: Severity::Strong,
+                reasons: vec![format!(
+                    "Suspected structuring\n Transations count: {},\n Transations sum: {}",
+                    &count, &txs_sum
+                )],
             }),
             (false, false, false) => {}
             _ => anomalies.push(Anomaly::Structuring {
                 sender: sender.to_string(),
                 count: count,
                 severity: Severity::Weak,
+                reasons: vec![format!(
+                    "Suspected structuring\n Transations count: {},\n Transations sum: {}",
+                    &count, &txs_sum
+                )],
             }),
         };
     }
 
-    if !anomalies.is_empty() {
-        result.push(AnalysisResult {
-            anomalies: anomalies,
-            patterns: vec![],
-        });
-    }
-
-    result
+    anomalies
 }
 
-pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    let mut result: Vec<AnalysisResult> = Vec::new();
-
+pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let all_txs = storage.all_txs.read().await;
     let all_fees: Vec<f64> = all_txs
         .iter()
@@ -157,29 +140,22 @@ pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
                 tx_hash: tx.hash.clone(),
                 fee_eth: fee_eth,
                 severity: Severity::Strong,
+                reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
             }),
             (true, false) | (false, true) => anomalies.push(Anomaly::HighFee {
                 tx_hash: tx.hash.clone(),
                 fee_eth: fee_eth,
                 severity: Severity::Weak,
+                reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
             }),
             (false, false) => {}
         }
     }
-    if !anomalies.is_empty() {
-        result.push(AnalysisResult {
-            anomalies: anomalies,
-            patterns: vec![],
-        });
-    }
-
-    result
+    anomalies
 }
 
-pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    let mut result: Vec<AnalysisResult> = Vec::new();
-
-    let blacklist = load_blacklist("config/blacklist.json");
+pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly> {
+    let blacklist = load_blacklist("./config/blacklist.json");
     let all_txs = storage.all_txs.read().await;
     let mut anomalies: Vec<Anomaly> = Vec::new();
 
@@ -188,6 +164,10 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Analysi
             anomalies.push(Anomaly::BlacklistedAddress {
                 tx_hash: tx.hash.clone(),
                 addres: tx.from.clone(),
+                reasons: vec![format!(
+                    "Transactions from a suspicious address: {}",
+                    &tx.from
+                )],
             });
         }
 
@@ -196,24 +176,16 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Analysi
                 anomalies.push(Anomaly::BlacklistedAddress {
                     tx_hash: tx.hash.clone(),
                     addres: to.clone(),
+                    reasons: vec![format!("Transactions from a suspicious address: {}", to)],
                 });
             }
         }
     }
 
-    if !anomalies.is_empty() {
-        result.push(AnalysisResult {
-            anomalies: anomalies,
-            patterns: vec![],
-        });
-    }
-
-    result
+    anomalies
 }
 
-pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    let mut result: Vec<AnalysisResult> = Vec::new();
-
+pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let all_txs = storage.all_txs.read().await;
     let mut anomalies: Vec<Anomaly> = Vec::new();
     for tx in all_txs.iter() {
@@ -282,52 +254,292 @@ pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<AnalysisResult>
         }
     }
 
-    result
+    anomalies
 }
 
-pub async fn detect_regular_payments(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_time_anomalies(storage: &SharedTxStorage) -> Vec<Anomaly> {
+    let all_txs = storage.all_txs.read().await;
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+
+    // let now = chrono::Utc::now();
+    let burst_interval = chrono::Duration::minutes(10);
+
+    let mut tx_times: HashMap<String, Vec<chrono::DateTime<chrono::Utc>>> = HashMap::new();
+
+    for tx in all_txs.iter() {
+        let ts: chrono::DateTime<chrono::Utc> = tx.timestamp.parse().unwrap();
+        let hour = ts.hour();
+
+        if hour <= 6 {
+            anomalies.push(Anomaly::UnusualOp {
+                tx_hash: tx.hash.clone(),
+                severiry: Severity::Weak,
+                reasons: vec!["Transaction in unusual time".to_string()],
+            });
+        }
+
+        tx_times.entry(tx.from.clone()).or_default().push(ts);
+    }
+
+    for (sender, times) in tx_times.iter() {
+        let mut sorted_times = times.clone();
+        sorted_times.sort();
+
+        for i in 0..sorted_times.len() {
+            let mut count = 1;
+            let start = sorted_times[i];
+            for j in i + 1..sorted_times.len() {
+                if sorted_times[j] - start <= burst_interval {
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+            if count >= 5 {
+                anomalies.push(Anomaly::BurstActivity {
+                    sender: sender.to_string(),
+                    reasons: vec![format!("Detected Burst activity from: {}", sender.clone())],
+                });
+                break;
+            }
+        }
+    }
+
+    anomalies
 }
 
-pub async fn detect_batch_payments(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_regular_payments(storage: &SharedTxStorage) -> Vec<BusinessPattern> {
+    let by_sender = &storage.by_sender;
+
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+    for entry in by_sender {
+        let sender = entry.key();
+        let txs = entry.value();
+
+        let mut groups: HashMap<Option<String>, Vec<&TransactionRecord>> = HashMap::new();
+        for tx in txs {
+            groups.entry(tx.to.clone()).or_default().push(tx);
+        }
+
+        for (_to, group) in groups {
+            if group.len() < 2 {
+                continue;
+            }
+
+            let mut sorted: Vec<&TransactionRecord> = group.clone();
+            sorted.sort_by_key(|tx| tx.timestamp.clone());
+
+            let mut intervals: Vec<i64> = vec![];
+            for i in 1..sorted.len() {
+                let prev: DateTime<Utc> = sorted[i - 1].timestamp.parse().unwrap();
+                let curr: DateTime<Utc> = sorted[i].timestamp.parse().unwrap();
+                intervals.push((curr - prev).num_seconds());
+            }
+
+            if intervals.len() > 0 {
+                // let avg_interval = intervals.iter().sum::<i64>() / intervals.len() as i64;
+                let mut sum_deviation = 0.0;
+                let total: f64 = sorted.iter().map(|tx| tx.value).fold(0.0, |acc, x| acc + x);
+                let avg_value = total / sorted.len() as f64;
+                for tx in sorted.iter() {
+                    sum_deviation += (tx.value - avg_value).abs();
+                }
+                let sum_deviation_avg: f64 = sum_deviation / (sorted.len() as f64);
+                let threshold: f64 = avg_value * 0.1;
+
+                if sum_deviation_avg < threshold {
+                    patterns.push(BusinessPattern::RegularPayments {
+                        sender: sender.to_string(),
+                        message: format!("Detected regular payments from {}", sender),
+                    });
+                }
+            }
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_dext_trade(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_batch_payments(storage: &SharedTxStorage) -> Vec<BusinessPattern> {
+
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+
+    let batch_interval = Duration::minutes(5);
+    let batch_threshold = 5;
+
+    let by_sender = &storage.by_sender;
+
+    for entry in by_sender {
+        let txs = entry.value();
+
+        let mut sorted: Vec<TransactionRecord> = txs.clone();
+        sorted.sort_by_key(|tx| tx.timestamp.clone());
+
+        let mut i = 0;
+        while i < sorted.len() {
+            let start: DateTime<Utc> = sorted[i].timestamp.parse().unwrap();
+            let mut batch_count = 1;
+            for j in i + 1..sorted.len() {
+                let ts: DateTime<Utc> = sorted[j].timestamp.parse().unwrap();
+                if ts - start <= batch_interval {
+                    batch_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if batch_count >= batch_threshold {
+                patterns.push(BusinessPattern::BatchPayments {
+                    sender: entry.key().clone(),
+                    count: batch_count.clone(),
+                    message: format!(
+                        "Detected batch payments from {}:\n Payments count: {}",
+                        entry.key().clone(),
+                        batch_count.clone()
+                    ),
+                });
+                i += batch_count;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_nft_activity(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_dex_trade(
+    storage: &SharedTxStorage,
+    dex_contracts: &HashSet<H160>,
+) -> Vec<BusinessPattern> {
+    let all_txs = storage.all_txs.read().await;
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+
+    for tx in all_txs.iter() {
+        if let Some(to) = &tx.to {
+            let to_addres: H160 = to.parse().expect("Invalid address");
+            if dex_contracts.contains(&to_addres) {
+                patterns.push(BusinessPattern::DEXTrade {
+                    dex: to_addres.to_string(),
+                    message: format!("Detected trading with DEX: {}", to_addres.to_string()),
+                });
+            }
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_liquid_provider(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_nft_activity(storage: &SharedTxStorage) -> Vec<BusinessPattern> {
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+    let all_txs = storage.all_txs.read().await;
+    for tx in all_txs.iter() {
+        if let Some(selector) = tx.input.get(0..10) {
+            if selector == "0x80ac58cd" || selector == "0xd9b67a26" {
+                patterns.push(BusinessPattern::NFTActivity {
+                    tx_hash: tx.hash.clone(),
+                    message: format!("Detected NFT activity: {}", tx.hash.clone()),
+                });
+            }
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_whales(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_liquid_provider(
+    storage: &SharedTxStorage,
+    dex_contracts: &HashSet<H160>,
+) -> Vec<BusinessPattern> {
+
+    let all_txs = storage.all_txs.read().await;
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+
+    for tx in all_txs.iter() {
+        if let Some(to) = &tx.to {
+            let to_addres: H160 = to.parse().expect("Invalid address");
+            if dex_contracts.contains(&to_addres) {
+                if let Some(selector) = &tx.input.get(0..10) {
+                    if selector.to_string() == "0xe8e33700" || selector.to_string() == "0xf305d719"
+                    {
+                        patterns.push(BusinessPattern::LiquidityProvider);
+                    }
+                }
+            }
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_active_traders(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_whales(storage: &SharedTxStorage) -> Vec<BusinessPattern> {
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+    let all_txs = storage.all_txs.read().await;
+    let global_thershold = global_threshold(storage).await;
+    for tx in all_txs.iter() {
+        if tx.value > global_thershold {
+            if let Some(reciver) = &tx.to {
+                patterns.push(BusinessPattern::Whales {
+                    sender: tx.from.clone(),
+                    reciever: reciver.clone(),
+                });
+            }
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_exchanges(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_active_traders(
+    storage: &SharedTxStorage,
+    dex_contracts: &HashSet<H160>,
+) -> Vec<BusinessPattern> {
+    let all_txs = storage.all_txs.read().await;
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+
+    let mut counter = HashMap::new();
+    for tx in all_txs.iter() {
+        if let Some(to) = &tx.to {
+            let to_addres: H160 = to.parse().expect("Invalid address");
+            if dex_contracts.contains(&to_addres) {
+                *counter.entry(&tx.from).or_insert(0) += 1;
+            }
+        }
+    }
+
+    for (address, count) in counter.iter() {
+        if *count > 10 {
+            patterns.push(BusinessPattern::ActiveTraders {
+                sender: address.to_string(),
+                message: format!("Detected active trader: {}", address),
+            });
+        }
+    }
+
+    patterns
 }
 
-pub async fn detect_arbitrage(storage: &SharedTxStorage) -> Vec<AnalysisResult> {
-    // TODO
-    unimplemented!()
+pub async fn detect_arbitrage(
+    storage: &SharedTxStorage,
+    dex_contracts: &HashSet<H160>,
+) -> Vec<BusinessPattern> {
+    let all_txs = storage.all_txs.read().await;
+    let mut patterns: Vec<BusinessPattern> = Vec::new();
+    for tx in all_txs.iter() {
+        if let Some(to) = &tx.to {
+            let to_addres: H160 = to.parse().expect("Invalid address");
+            if dex_contracts.contains(&to_addres) {
+                if tx.input.contains("multicall") || tx.input.contains("swapExactTokensForTokens") {
+                    patterns.push(BusinessPattern::Arbitrage {
+                        sender: tx.from.to_string(),
+                        message: format!("Detected possible arbtrage from: {}", tx.from.clone()),
+                    });
+                }
+            }
+        }
+    }
+
+    patterns
 }
 
 fn percentile(values: &Vec<f64>) -> f64 {

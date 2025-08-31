@@ -1,15 +1,14 @@
 use crate::models::{SharedTxStorage, TransactionRecord};
 use chrono::{DateTime, Utc};
-use csv::Writer;
 use ethers::{providers::Middleware, utils::hex};
 use log::info;
-use std::{fmt::format, sync::Arc};
+use std::sync::Arc;
 
 pub async fn scan_block<M>(
-    provider: Arc<M>,
+    provider: &Arc<M>,
     start_block: u64,
     end_block: u64,
-    storage: SharedTxStorage,
+    storage: &SharedTxStorage,
 ) -> Result<(), M::Error>
 where
     M: Middleware + 'static,
@@ -44,18 +43,6 @@ where
             }
         }
     }
-    Ok(())
-}
-
-pub fn save_to_csv(
-    records: &Vec<TransactionRecord>,
-    path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = Writer::from_path(path)?;
-    for rec in records {
-        wtr.serialize(rec)?;
-    }
-    wtr.flush()?;
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use crate::{
     config::{APPROVE_THRESHOLD, KNOWN_SELECTORS, K_LOCAL, K_LOCAL_FEE, PERC, THRESHOLD_TIME},
     models::{
         Anomaly, BusinessPattern, Severity, SharedTxStorage, TransactionRecord,
-    },
+    }, scanner::fetch_sanctioned_addresses
 };
 use chrono::{DateTime, Duration, Timelike, Utc};
 use ethers::types::H160;
@@ -22,16 +22,21 @@ pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<Anomaly> {
         let local_flag = local_mean > 0.0 && tx.value > K_LOCAL * local_mean;
         let global_flag = tx.value > global_thershold;
 
+        let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+                .unwrap_or_else(|_| Utc::now().into())
+                .with_timezone(&Utc);
         match (local_flag, global_flag) {
             (true, true) => anomalies.push(Anomaly::LargeTx {
                 tx_hash: tx.hash.clone(),
                 severity: Severity::Strong,
                 reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
+                timestamp: timestamp
             }),
             (true, false) | (false, true) => anomalies.push(Anomaly::LargeTx {
                 tx_hash: tx.hash.clone(),
                 severity: Severity::Weak,
                 reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
+                timestamp: timestamp
             }),
             (false, false) => {}
         };
@@ -135,18 +140,23 @@ pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<Anomaly> {
         let local_flag = local_mean > 0.0 && fee_eth > K_LOCAL_FEE * local_mean;
         let global_flag = fee_eth > global_threshold;
 
+        let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+                .unwrap_or_else(|_| Utc::now().into())
+                .with_timezone(&Utc);
         match (local_flag, global_flag) {
             (true, true) => anomalies.push(Anomaly::HighFee {
                 tx_hash: tx.hash.clone(),
                 fee_eth: fee_eth,
                 severity: Severity::Strong,
                 reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
+                timestamp: timestamp
             }),
             (true, false) | (false, true) => anomalies.push(Anomaly::HighFee {
                 tx_hash: tx.hash.clone(),
                 fee_eth: fee_eth,
                 severity: Severity::Weak,
                 reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
+                timestamp: timestamp
             }),
             (false, false) => {}
         }
@@ -155,19 +165,27 @@ pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<Anomaly> {
 }
 
 pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly> {
-    let blacklist = load_blacklist("./config/blacklist.json");
+    let blacklist: HashSet<String> = match fetch_sanctioned_addresses().await {
+        Ok(set) => set,
+        Err(_) => {
+            eprintln!("⚠️ Не удалось загрузить санкционные адреса");
+            HashSet::new()
+        }
+    };
+
     let all_txs = storage.all_txs.read().await;
-    let mut anomalies: Vec<Anomaly> = Vec::new();
+    let mut anomalies = Vec::new();
 
     for tx in all_txs.iter() {
+        let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+                .unwrap_or_else(|_| Utc::now().into())
+                .with_timezone(&Utc);
         if blacklist.contains(&tx.from) {
             anomalies.push(Anomaly::BlacklistedAddress {
                 tx_hash: tx.hash.clone(),
                 addres: tx.from.clone(),
-                reasons: vec![format!(
-                    "Transactions from a suspicious address: {}",
-                    &tx.from
-                )],
+                reasons: vec![format!("Transactions from a sanctioned address: {}", &tx.from)],
+                timestamp: timestamp
             });
         }
 
@@ -176,7 +194,8 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly
                 anomalies.push(Anomaly::BlacklistedAddress {
                     tx_hash: tx.hash.clone(),
                     addres: to.clone(),
-                    reasons: vec![format!("Transactions from a suspicious address: {}", to)],
+                    reasons: vec![format!("Transactions to a sanctioned address: {}", to)],
+                    timestamp: timestamp
                 });
             }
         }
@@ -184,6 +203,7 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly
 
     anomalies
 }
+
 
 pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let all_txs = storage.all_txs.read().await;
@@ -239,17 +259,22 @@ pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<Anomaly> {
             }
         }
 
+        let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+            .unwrap_or_else(|_| Utc::now().into())
+            .with_timezone(&Utc);
         if reasons.len() > 3 {
             anomalies.push(Anomaly::UnusualOp {
                 tx_hash: tx.hash.clone(),
                 reasons: reasons,
-                severiry: Severity::Strong,
+                severity: Severity::Strong,
+                timestamp: timestamp
             });
         } else {
             anomalies.push(Anomaly::UnusualOp {
                 tx_hash: tx.hash.clone(),
                 reasons: reasons,
-                severiry: Severity::Weak,
+                severity: Severity::Weak,
+                timestamp: timestamp
             });
         }
     }
@@ -271,10 +296,14 @@ pub async fn detect_time_anomalies(storage: &SharedTxStorage) -> Vec<Anomaly> {
         let hour = ts.hour();
 
         if hour <= 6 {
+            let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+                .unwrap_or_else(|_| Utc::now().into())
+                .with_timezone(&Utc);
             anomalies.push(Anomaly::UnusualOp {
                 tx_hash: tx.hash.clone(),
-                severiry: Severity::Weak,
+                severity: Severity::Weak,
                 reasons: vec!["Transaction in unusual time".to_string()],
+                timestamp: timestamp
             });
         }
 
@@ -473,17 +502,17 @@ pub async fn detect_liquid_provider(
 }
 
 pub async fn detect_whales(storage: &SharedTxStorage) -> Vec<BusinessPattern> {
+
     let mut patterns: Vec<BusinessPattern> = Vec::new();
-    let all_txs = storage.all_txs.read().await;
-    let global_thershold = global_threshold(storage).await;
-    for tx in all_txs.iter() {
-        if tx.value > global_thershold {
-            if let Some(reciver) = &tx.to {
-                patterns.push(BusinessPattern::Whales {
-                    sender: tx.from.clone(),
-                    reciever: reciver.clone(),
-                });
-            }
+    for entry in storage.by_sender.iter() {
+        let sender = entry.key();
+        let global_threshold = global_threshold(&storage).await;
+        let local_mean = local_mean(&storage, &sender);
+
+        if local_mean > global_threshold {
+            patterns.push(BusinessPattern::Whales {
+                sender: sender.clone(),
+            });
         }
     }
 
@@ -608,7 +637,7 @@ fn local_mean_fee(storage: &SharedTxStorage, sender: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-pub fn load_blacklist(path: &str) -> HashSet<String> {
-    let data = fs::read_to_string(path).expect("Failed to read blacklist file");
-    serde_json::from_str(&data).expect("Invalid blacklist JSON format")
-}
+// pub fn load_blacklist(path: &str) -> HashSet<String> {
+//     let data = fs::read_to_string(path).expect("Failed to read blacklist file");
+//     serde_json::from_str(&data).expect("Invalid blacklist JSON format")
+// }

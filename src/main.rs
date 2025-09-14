@@ -3,17 +3,20 @@ mod config;
 mod csv;
 mod models;
 mod scanner;
-mod viz;
 
 use analize::{
-    detect_active_traders, detect_arbitrage, detect_batch_payments, detect_blacklist_adresses, detect_dex_trade, detect_high_fee, detect_high_frequency, detect_large_tx, detect_liquid_provider, detect_nft_activity, detect_regular_payments, detect_structuring, detect_time_anomalies, detect_unusual_op, detect_whales
+    detect_active_traders, detect_arbitrage, detect_batch_payments, detect_blacklist_adresses,
+    detect_dex_trade, detect_high_fee, detect_high_frequency, detect_large_tx,
+    detect_liquid_provider, detect_nft_activity, detect_regular_payments, detect_structuring,
+    detect_time_anomalies, detect_unusual_op, detect_whales,
 };
 use csv::{export_anomalies_csv, export_patterns_csv};
 use ethers::prelude::*;
 use ethers::providers::{Http, Middleware, Provider};
 use models::TxStorage;
 use scanner::scan_block;
-use std::{collections::HashSet, sync::Arc, env};
+use std::{collections::HashSet, env, sync::Arc};
+use std::process::Command;
 
 abigen!(
     UniswapV2Factory,
@@ -56,14 +59,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = Arc::new(TxStorage::new());
     let _records = scan_block(&provider, start_block, end_block, &storage).await;
+    let all_txs = storage.all_txs.read().await;
+    println!("Всего транзакций: {}", all_txs.len());
+    // for tx in all_txs.iter().take(5) { // показываем первые 5
+    //     println!("TX: {} from {} to {:?}", tx.hash, tx.from, tx.to);
+    // }
 
     let large_tx = detect_large_tx(&storage).await;
+    // println!("Аномалилй с большой суммой: {}", large_tx.len());
     let high_frequency = detect_high_frequency(&storage).await;
+    // println!("Аномалилй большого количества транзакций: {}", high_frequency.len());
     let structuring = detect_structuring(&storage).await;
+    //println!("Аномалилй с дроблением: {}", structuring.len());
     let high_fee = detect_high_fee(&storage).await;
+    //println!("Аномалилй с большой комиссией: {}", high_fee.len());
     let blacklist_addresses = detect_blacklist_adresses(&storage).await;
     let unusual_op = detect_unusual_op(&storage).await;
+    //println!("Аномалилй с необычными операциями: {}", unusual_op.len());
     let time_anomaly = detect_time_anomalies(&storage).await;
+    //println!("Аномалилй по времени: {}", time_anomaly.len());
 
     let project_dir = env::current_dir().unwrap();
     let file_path = project_dir.join("anomalies.csv");
@@ -76,7 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     anomalies.extend(unusual_op);
     anomalies.extend(time_anomaly);
 
-    let _ = export_anomalies_csv(&anomalies, file_path.to_str().unwrap()).await;
+    println!("Количество аномалий: {}", anomalies.len());
+
+    let _ = export_anomalies_csv(&anomalies, file_path.to_str().unwrap()).map_err(|e| println!("Ошибка записи CSV: {:?}", e))
+    .ok();
+    
 
     let file_path = project_dir.join("patterns.csv");
     let regular_payments = detect_regular_payments(&storage).await;
@@ -87,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_traders = detect_active_traders(&storage, &dex_routers).await;
     let arbitrage = detect_arbitrage(&storage, &dex_routers).await;
     let whales = detect_whales(&storage).await;
-    
+
     let mut patterns = Vec::new();
     patterns.extend(regular_payments);
     patterns.extend(batch_payments);
@@ -98,7 +116,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     patterns.extend(arbitrage);
     patterns.extend(whales);
 
-    let _ = export_patterns_csv(&patterns, file_path.to_str().unwrap()).await;
+    println!("Количество паттернов: {}", patterns.len());
+
+    let _ = export_patterns_csv(&patterns, file_path.to_str().unwrap()).map_err(|e| println!("Ошибка записи CSV: {:?}", e))
+    .ok();
+
+    // let project_dir = std::env::current_dir().unwrap();
+    // let anomalies_csv = project_dir.join("anomalies.csv");
+    // let patterns_csv = project_dir.join("patterns.csv");
+
+    // Command::new("python3")
+    // .arg("viz.py")
+    // .arg(anomalies_csv.to_str().unwrap())
+    // .arg(patterns_csv.to_str().unwrap())
+    // .status()
+    // .expect("Не удалось запустить Python визуализацию");
+
+    // if let Err(e) = viz::visualize(
+    //     anomalies_csv.to_str().unwrap(),
+    //     patterns_csv.to_str().unwrap()
+    // ) {
+    //     eprintln!("Ошибка при визуализации: {}", e);
+    // } else {
+    //     println!("Графики успешно созданы!");
+    // }
 
     Ok(())
 }

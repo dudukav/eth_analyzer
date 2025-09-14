@@ -1,2 +1,7 @@
 /target
 /Cargo.lock
+/anomalies.csv
+/patterns.csv
+/animalies_types.png
+/patterns_types.png
+/anomalies_time.png

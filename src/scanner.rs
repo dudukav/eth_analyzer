@@ -1,8 +1,12 @@
 use crate::models::{SharedTxStorage, TransactionRecord};
 use chrono::{DateTime, Utc};
 use ethers::{providers::Middleware, utils::hex};
+use futures::stream::{FuturesUnordered, StreamExt};
 use log::info;
 use std::sync::Arc;
+use reqwest;
+use serde::Deserialize;
+use std::collections::HashSet;
 
 pub async fn scan_block<M>(
     provider: &Arc<M>,
@@ -13,38 +17,93 @@ pub async fn scan_block<M>(
 where
     M: Middleware + 'static,
 {
-    let storage_clone = Arc::clone(&storage);
-    for block_number in start_block..end_block {
-        if let Some(block) = provider.get_block_with_txs(block_number).await? {
-            let ts: i64 = block.timestamp.as_u64() as i64;
-            let datetime: DateTime<Utc> =
-                DateTime::<Utc>::from_timestamp(ts, 0).expect("invalid timestamp");
-            let timestamp_str = datetime.to_rfc3339();
+    let mut futures = FuturesUnordered::new();
 
-            info!(
-                "Scanning block {} ({} transactions)",
-                block_number,
-                block.transactions.len()
-            );
+    for block_number in start_block..=end_block {
+        let provider = Arc::clone(provider);
+        let storage = Arc::clone(storage);
 
-            for tx in block.transactions {
-                let record = TransactionRecord {
-                    hash: format!("{:?}", tx.hash),
-                    from: format!("{:?}", tx.from),
-                    to: tx.to.map(|addr| format!("{:?}", addr)),
-                    value: wei_to_eth(tx.value.as_u128()),
-                    gas: tx.gas.as_u64(),
-                    gas_price_gwei: wei_to_gwei(tx.gas_price.unwrap_or_default().as_u128()),
-                    block_number: block_number,
-                    timestamp: timestamp_str.clone(),
-                    input: format!("0x{}", hex::encode(&tx.input)),
-                };
-                storage_clone.add_transaction(tx.from, tx.to, record).await;
+        futures.push(async move {
+            if let Some(block) = provider.get_block_with_txs(block_number).await? {
+                let ts: i64 = block.timestamp.as_u64() as i64;
+                let datetime: DateTime<Utc> =
+                    DateTime::<Utc>::from_timestamp(ts, 0).expect("invalid timestamp");
+                let timestamp_str = datetime.to_rfc3339();
+
+                info!(
+                    "Processing block {} ({} transactions)",
+                    block_number,
+                    block.transactions.len()
+                );
+
+                // соберём все записи для блока
+                let mut batch: Vec<TransactionRecord> =
+                    Vec::with_capacity(block.transactions.len());
+                for tx in block.transactions {
+                    batch.push(TransactionRecord {
+                        hash: format!("{:?}", tx.hash),
+                        from: format!("{:?}", tx.from),
+                        to: tx.to.map(|addr| format!("{:?}", addr)),
+                        value: wei_to_eth(tx.value.as_u128()),
+                        gas: tx.gas.as_u64(),
+                        gas_price_gwei: wei_to_gwei(tx.gas_price.unwrap_or_default().as_u128()),
+                        block_number,
+                        timestamp: timestamp_str.clone(),
+                        input: format!("0x{}", hex::encode(&tx.input)),
+                    });
+                }
+
+                // теперь одним батчем добавляем в storage
+                {
+                    let mut all_txs = storage.all_txs.write().await;
+                    all_txs.extend(batch.clone());
+                }
+
+                // обновляем by_sender и by_receiver
+                for tx in batch {
+                    storage
+                        .by_sender
+                        .entry(tx.from.clone())
+                        .or_default()
+                        .push(tx.clone());
+                    if let Some(to) = &tx.to {
+                        storage.by_reciever.entry(to.clone()).or_default().push(tx);
+                    }
+                }
             }
-        }
+            Ok::<(), M::Error>(())
+        });
     }
+
+    // ждём пока все блоки загрузятся
+    while let Some(res) = futures.next().await {
+        res?;
+    }
+
     Ok(())
 }
+
+
+#[derive(Deserialize)]
+struct SanctionedAddress {
+    address: String,
+}
+
+pub async fn fetch_sanctioned_addresses() -> Result<HashSet<String>, reqwest::Error> {
+    let url = "https://raw.githubusercontent.com/0xB10C/ofac-sanctioned-digital-currency-addresses/lists/sanctioned_addresses_ETH.json";
+    let resp = reqwest::get(url).await?;
+
+    if resp.status().is_success() {
+        let addresses: Vec<SanctionedAddress> = resp.json().await?;
+        Ok(addresses.into_iter().map(|a| a.address).collect())
+    } else {
+        eprintln!("⚠️ Ошибка загрузки данных: {}", resp.status());
+        Ok(HashSet::new())
+    }
+}
+
+
+
 
 fn wei_to_eth(wei: u128) -> f64 {
     wei as f64 / 1e18

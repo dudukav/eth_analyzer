@@ -1,15 +1,16 @@
 use crate::{
-    config::{APPROVE_THRESHOLD, KNOWN_SELECTORS, K_LOCAL, K_LOCAL_FEE, PERC, THRESHOLD_TIME},
+    config::{K_LOCAL, K_LOCAL_FEE, PERC, THRESHOLD_TIME},
     models::{
         Anomaly, BusinessPattern, Severity, SharedTxStorage, TransactionRecord,
     }, scanner::fetch_sanctioned_addresses
 };
 use chrono::{DateTime, Duration, Timelike, Utc};
 use ethers::types::H160;
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-};
+use std::collections::{HashMap, HashSet};
+use once_cell::sync::Lazy;
+use tokio::sync::RwLock;
+
+static FLAGGED_HASHES: Lazy<RwLock<HashSet<String>>> = Lazy::new(|| RwLock::new(HashSet::new()));
 
 pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<Anomaly> {
     let mut anomalies: Vec<Anomaly> = Vec::new();
@@ -26,18 +27,26 @@ pub async fn detect_large_tx(storage: &SharedTxStorage) -> Vec<Anomaly> {
                 .unwrap_or_else(|_| Utc::now().into())
                 .with_timezone(&Utc);
         match (local_flag, global_flag) {
-            (true, true) => anomalies.push(Anomaly::LargeTx {
-                tx_hash: tx.hash.clone(),
-                severity: Severity::Strong,
-                reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
-                timestamp: timestamp
-            }),
-            (true, false) | (false, true) => anomalies.push(Anomaly::LargeTx {
-                tx_hash: tx.hash.clone(),
-                severity: Severity::Weak,
-                reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
-                timestamp: timestamp
-            }),
+            (true, true) => {
+                    anomalies.push(Anomaly::LargeTx {
+                        tx_hash: tx.hash.clone(),
+                        severity: Severity::Strong,
+                        reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
+                        timestamp: timestamp
+                    });
+                    let mut hashes = FLAGGED_HASHES.write().await;
+                    hashes.insert(tx.hash.clone());
+            }
+            (true, false) | (false, true) => {
+                anomalies.push(Anomaly::LargeTx {
+                    tx_hash: tx.hash.clone(),
+                    severity: Severity::Weak,
+                    reasons: vec![format!("Suspiciously large transaction: {}", &tx.value)],
+                    timestamp: timestamp
+                });
+                let mut hashes = FLAGGED_HASHES.write().await;
+                hashes.insert(tx.hash.clone());
+            }
             (false, false) => {}
         };
     }
@@ -51,7 +60,7 @@ pub async fn detect_high_frequency(storage: &SharedTxStorage) -> Vec<Anomaly> {
 
     let by_senders = &storage.by_sender;
     let mut anomalies: Vec<Anomaly> = Vec::new();
-    for entry in by_senders.iter() {
+    for entry in by_senders.iter_mut() {
         let sender = entry.key();
         let txs = entry.value();
 
@@ -65,6 +74,10 @@ pub async fn detect_high_frequency(storage: &SharedTxStorage) -> Vec<Anomaly> {
                 count: count,
                 reasons: vec![format!("Too many transactions per hour: {}", &count)],
             });
+            let mut hashes = FLAGGED_HASHES.write().await;
+            for tx in txs.iter() {
+                hashes.insert(tx.hash.clone());
+            }
         }
     }
 
@@ -98,25 +111,37 @@ pub async fn detect_structuring(storage: &SharedTxStorage) -> Vec<Anomaly> {
         let count_flag = count > 10;
 
         match (local_flag, global_flag, count_flag) {
-            (true, true, true) => anomalies.push(Anomaly::Structuring {
-                sender: sender.to_string(),
-                count: count,
-                severity: Severity::Strong,
-                reasons: vec![format!(
-                    "Suspected structuring\n Transations count: {},\n Transations sum: {}",
-                    &count, &txs_sum
-                )],
-            }),
+            (true, true, true) => {
+                anomalies.push(Anomaly::Structuring {
+                    sender: sender.to_string(),
+                    count: count,
+                    severity: Severity::Strong,
+                    reasons: vec![format!(
+                        "Suspected structuring\n Transations count: {},\n Transations sum: {}",
+                        &count, &txs_sum
+                    )],
+                });
+                let mut hashes = FLAGGED_HASHES.write().await;
+                for tx in txs.iter() {
+                    hashes.insert(tx.hash.clone());
+                }
+            }
             (false, false, false) => {}
-            _ => anomalies.push(Anomaly::Structuring {
-                sender: sender.to_string(),
-                count: count,
-                severity: Severity::Weak,
-                reasons: vec![format!(
-                    "Suspected structuring\n Transations count: {},\n Transations sum: {}",
-                    &count, &txs_sum
-                )],
-            }),
+            _ => {
+                anomalies.push(Anomaly::Structuring {
+                    sender: sender.to_string(),
+                    count: count,
+                    severity: Severity::Weak,
+                    reasons: vec![format!(
+                        "Suspected structuring\n Transations count: {},\n Transations sum: {}",
+                        &count, &txs_sum
+                    )],
+                });
+                let mut hashes = FLAGGED_HASHES.write().await;
+                for tx in txs.iter() {
+                    hashes.insert(tx.hash.clone());
+                }
+            }
         };
     }
 
@@ -144,20 +169,28 @@ pub async fn detect_high_fee(storage: &SharedTxStorage) -> Vec<Anomaly> {
                 .unwrap_or_else(|_| Utc::now().into())
                 .with_timezone(&Utc);
         match (local_flag, global_flag) {
-            (true, true) => anomalies.push(Anomaly::HighFee {
-                tx_hash: tx.hash.clone(),
-                fee_eth: fee_eth,
-                severity: Severity::Strong,
-                reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
-                timestamp: timestamp
-            }),
-            (true, false) | (false, true) => anomalies.push(Anomaly::HighFee {
-                tx_hash: tx.hash.clone(),
-                fee_eth: fee_eth,
-                severity: Severity::Weak,
-                reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
-                timestamp: timestamp
-            }),
+            (true, true) => {
+                anomalies.push(Anomaly::HighFee {
+                    tx_hash: tx.hash.clone(),
+                    fee_eth: fee_eth,
+                    severity: Severity::Strong,
+                    reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
+                    timestamp: timestamp
+                });
+                let mut hashes = FLAGGED_HASHES.write().await;
+                hashes.insert(tx.hash.clone());
+            }
+            (true, false) | (false, true) => {
+                anomalies.push(Anomaly::HighFee {
+                    tx_hash: tx.hash.clone(),
+                    fee_eth: fee_eth,
+                    severity: Severity::Weak,
+                    reasons: vec![format!("Suspiciously high fee: {}", fee_eth)],
+                    timestamp: timestamp
+                });
+                let mut hashes = FLAGGED_HASHES.write().await;
+                hashes.insert(tx.hash.clone());
+            }
             (false, false) => {}
         }
     }
@@ -187,6 +220,8 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly
                 reasons: vec![format!("Transactions from a sanctioned address: {}", &tx.from)],
                 timestamp: timestamp
             });
+            let mut hashes = FLAGGED_HASHES.write().await;
+            hashes.insert(tx.hash.clone());
         }
 
         if let Some(to) = &tx.to {
@@ -197,6 +232,8 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly
                     reasons: vec![format!("Transactions to a sanctioned address: {}", to)],
                     timestamp: timestamp
                 });
+                let mut hashes = FLAGGED_HASHES.write().await;
+                hashes.insert(tx.hash.clone());
             }
         }
     }
@@ -205,75 +242,119 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly
 }
 
 
-pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<Anomaly> {
+// pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<Anomaly> {
+//     let all_txs = storage.all_txs.read().await;
+//     let mut anomalies: Vec<Anomaly> = Vec::new();
+//     for tx in all_txs.iter() {
+//         let mut reasons: Vec<String> = Vec::new();
+
+//         let selector = &tx.input.get(0..10).unwrap_or("");
+//         if !selector.is_empty() && !KNOWN_SELECTORS.contains(selector) {
+//             reasons.push(format!("Unknown function selector: {}", selector));
+//         }
+
+//         if selector.to_string() == "0x095ea7b3" && tx.value > APPROVE_THRESHOLD {
+//             reasons.push(format!("Suspiciously large approve: {}", tx.value));
+//         }
+
+//         if selector.to_string() == "0xa9059cbb" {
+//             let known_tokens = storage
+//                 .by_sender
+//                 .get(&tx.from)
+//                 .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
+//                 .unwrap_or_default();
+//             if let Some(to) = &tx.to {
+//                 if !known_tokens.contains(to) {
+//                     reasons.push(format!("Transfer to unusual token: {}", to));
+//                 }
+//             }
+//         }
+
+//         if let Some(to) = &tx.to {
+//             if to == "0x0000000000000000000000000000000000000000"
+//                 || to == "0x000000000000000000000000000000000000dEaD"
+//             {
+//                 reasons.push("Token burn transaction".to_string());
+//             }
+//         }
+
+//         if let Some(to) = &tx.to {
+//             let seen_contracts = storage
+//                 .by_sender
+//                 .get(&tx.from)
+//                 .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
+//                 .unwrap_or_default();
+//             if !seen_contracts.contains(to) {
+//                 reasons.push(format!("Interaction with new contract: {}", to));
+//             }
+//         }
+
+//         if let Some(to) = &tx.to {
+//             let count = storage.by_reciever.get(to).map(|v| v.len()).unwrap_or(0);
+//             if count < 3 {
+//                 reasons.push(format!("Interaction with low-activity contract: {}", to));
+//             }
+//         }
+
+//         let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+//             .unwrap_or_else(|_| Utc::now().into())
+//             .with_timezone(&Utc);
+//         if reasons.len() > 3 {
+//             anomalies.push(Anomaly::UnusualOp {
+//                 tx_hash: tx.hash.clone(),
+//                 reasons: reasons,
+//                 severity: Severity::Strong,
+//                 timestamp: timestamp
+//             });
+//         } else {
+//             anomalies.push(Anomaly::UnusualOp {
+//                 tx_hash: tx.hash.clone(),
+//                 reasons: reasons,
+//                 severity: Severity::Weak,
+//                 timestamp: timestamp
+//             });
+//         }
+//     }
+
+//     anomalies
+// }
+pub async fn detect_unusual_op(
+    storage: &SharedTxStorage
+) -> Vec<Anomaly> {
     let all_txs = storage.all_txs.read().await;
-    let mut anomalies: Vec<Anomaly> = Vec::new();
+    let mut anomalies = Vec::new();
+
+    // Статистика для value и gas
+    let values = all_txs.iter().map(|tx| tx.value).collect();
+    let gas_prices = all_txs.iter().map(|tx| tx.gas_price_gwei).collect();
+
+    let value_threshold = percentile(&values);
+    let gas_threshold = percentile(&gas_prices);
+
     for tx in all_txs.iter() {
-        let mut reasons: Vec<String> = Vec::new();
-
-        let selector = &tx.input.get(0..10).unwrap_or("");
-        if !selector.is_empty() && !KNOWN_SELECTORS.contains(selector) {
-            reasons.push(format!("Unknown function selector: {}", selector));
+        // Пропускаем транзакции, которые уже попали в другие аномалии
+        let flagged_hashes = FLAGGED_HASHES.read().await;
+        if flagged_hashes.contains(&tx.hash) {
+            continue;
         }
 
-        if selector.to_string() == "0x095ea7b3" && tx.value > APPROVE_THRESHOLD {
-            reasons.push(format!("Suspiciously large approve: {}", tx.value));
-        }
+        let unusual_value = tx.value > value_threshold;
+        let unusual_gas = tx.gas_price_gwei > gas_threshold;
+        let unusual_input = !tx.input.starts_with("0x") || tx.input.len() > 100;
 
-        if selector.to_string() == "0xa9059cbb" {
-            let known_tokens = storage
-                .by_sender
-                .get(&tx.from)
-                .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
-                .unwrap_or_default();
-            if let Some(to) = &tx.to {
-                if !known_tokens.contains(to) {
-                    reasons.push(format!("Transfer to unusual token: {}", to));
-                }
-            }
-        }
-
-        if let Some(to) = &tx.to {
-            if to == "0x0000000000000000000000000000000000000000"
-                || to == "0x000000000000000000000000000000000000dEaD"
-            {
-                reasons.push("Token burn transaction".to_string());
-            }
-        }
-
-        if let Some(to) = &tx.to {
-            let seen_contracts = storage
-                .by_sender
-                .get(&tx.from)
-                .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
-                .unwrap_or_default();
-            if !seen_contracts.contains(to) {
-                reasons.push(format!("Interaction with new contract: {}", to));
-            }
-        }
-
-        if let Some(to) = &tx.to {
-            let count = storage.by_reciever.get(to).map(|v| v.len()).unwrap_or(0);
-            if count < 3 {
-                reasons.push(format!("Interaction with low-activity contract: {}", to));
-            }
-        }
-
-        let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
-            .unwrap_or_else(|_| Utc::now().into())
-            .with_timezone(&Utc);
-        if reasons.len() > 3 {
+        if unusual_value || unusual_gas || unusual_input {
+            let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
+                .unwrap_or_else(|_| Utc::now().into())
+                .with_timezone(&Utc);
             anomalies.push(Anomaly::UnusualOp {
                 tx_hash: tx.hash.clone(),
-                reasons: reasons,
-                severity: Severity::Strong,
-                timestamp: timestamp
-            });
-        } else {
-            anomalies.push(Anomaly::UnusualOp {
-                tx_hash: tx.hash.clone(),
-                reasons: reasons,
-                severity: Severity::Weak,
+                severity: if unusual_value || unusual_gas { Severity::Strong } else { Severity::Weak },
+                reasons: vec![
+                    format!(
+                        "Unusual operation: value={}, gas={}, input_len={}",
+                        tx.value, tx.gas_price_gwei, tx.input.len()
+                    ),
+                ],
                 timestamp: timestamp
             });
         }
@@ -299,7 +380,7 @@ pub async fn detect_time_anomalies(storage: &SharedTxStorage) -> Vec<Anomaly> {
             let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
                 .unwrap_or_else(|_| Utc::now().into())
                 .with_timezone(&Utc);
-            anomalies.push(Anomaly::UnusualOp {
+            anomalies.push(Anomaly::TimeAnomaly {
                 tx_hash: tx.hash.clone(),
                 severity: Severity::Weak,
                 reasons: vec!["Transaction in unusual time".to_string()],

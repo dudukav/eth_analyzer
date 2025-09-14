@@ -121,25 +121,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = export_patterns_csv(&patterns, file_path.to_str().unwrap()).map_err(|e| println!("Ошибка записи CSV: {:?}", e))
     .ok();
 
-    // let project_dir = std::env::current_dir().unwrap();
-    // let anomalies_csv = project_dir.join("anomalies.csv");
-    // let patterns_csv = project_dir.join("patterns.csv");
+    let project_dir = env::current_dir()?;
+    let anomalies_path = project_dir.join("anomalies.csv");
+    let patterns_path = project_dir.join("patterns.csv");
 
-    // Command::new("python3")
-    // .arg("viz.py")
-    // .arg(anomalies_csv.to_str().unwrap())
-    // .arg(patterns_csv.to_str().unwrap())
-    // .status()
-    // .expect("Не удалось запустить Python визуализацию");
+    // Вызов Python скрипта
+    let viz_path = project_dir.join("src/viz.py"); // путь к Python скрипту
+    let _python_path = project_dir.join("venv/bin/python3");
+    let status = Command::new("python3")
+        .arg(viz_path.to_str().unwrap())
+        .arg(anomalies_path.to_str().unwrap())
+        .arg(patterns_path.to_str().unwrap())
+        .status()?;
 
-    // if let Err(e) = viz::visualize(
-    //     anomalies_csv.to_str().unwrap(),
-    //     patterns_csv.to_str().unwrap()
-    // ) {
-    //     eprintln!("Ошибка при визуализации: {}", e);
-    // } else {
-    //     println!("Графики успешно созданы!");
-    // }
+    if !status.success() {
+        eprintln!("Ошибка при запуске визуализации!");
+    } else {
+        println!("Графики успешно созданы!");
+    }
 
     Ok(())
 }

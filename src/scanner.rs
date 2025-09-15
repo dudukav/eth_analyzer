@@ -36,7 +36,6 @@ where
                     block.transactions.len()
                 );
 
-                // соберём все записи для блока
                 let mut batch: Vec<TransactionRecord> =
                     Vec::with_capacity(block.transactions.len());
                 for tx in block.transactions {
@@ -53,13 +52,11 @@ where
                     });
                 }
 
-                // теперь одним батчем добавляем в storage
                 {
                     let mut all_txs = storage.all_txs.write().await;
                     all_txs.extend(batch.clone());
                 }
 
-                // обновляем by_sender и by_receiver
                 for tx in batch {
                     storage
                         .by_sender
@@ -75,7 +72,6 @@ where
         });
     }
 
-    // ждём пока все блоки загрузятся
     while let Some(res) = futures.next().await {
         res?;
     }

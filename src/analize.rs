@@ -5,10 +5,19 @@ use crate::{
     }, scanner::fetch_sanctioned_addresses
 };
 use chrono::{DateTime, Duration, Timelike, Utc};
-use ethers::types::H160;
+use ethers::prelude::*;  
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
+
+abigen!(
+    UniswapV2Factory,
+    r#"[
+        function allPairsLength() external view returns (uint256)
+        function allPairs(uint256) external view returns (address)
+    ]"#
+);
 
 static FLAGGED_HASHES: Lazy<RwLock<HashSet<String>>> = Lazy::new(|| RwLock::new(HashSet::new()));
 
@@ -241,90 +250,12 @@ pub async fn detect_blacklist_adresses(storage: &SharedTxStorage) -> Vec<Anomaly
     anomalies
 }
 
-
-// pub async fn detect_unusual_op(storage: &SharedTxStorage) -> Vec<Anomaly> {
-//     let all_txs = storage.all_txs.read().await;
-//     let mut anomalies: Vec<Anomaly> = Vec::new();
-//     for tx in all_txs.iter() {
-//         let mut reasons: Vec<String> = Vec::new();
-
-//         let selector = &tx.input.get(0..10).unwrap_or("");
-//         if !selector.is_empty() && !KNOWN_SELECTORS.contains(selector) {
-//             reasons.push(format!("Unknown function selector: {}", selector));
-//         }
-
-//         if selector.to_string() == "0x095ea7b3" && tx.value > APPROVE_THRESHOLD {
-//             reasons.push(format!("Suspiciously large approve: {}", tx.value));
-//         }
-
-//         if selector.to_string() == "0xa9059cbb" {
-//             let known_tokens = storage
-//                 .by_sender
-//                 .get(&tx.from)
-//                 .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
-//                 .unwrap_or_default();
-//             if let Some(to) = &tx.to {
-//                 if !known_tokens.contains(to) {
-//                     reasons.push(format!("Transfer to unusual token: {}", to));
-//                 }
-//             }
-//         }
-
-//         if let Some(to) = &tx.to {
-//             if to == "0x0000000000000000000000000000000000000000"
-//                 || to == "0x000000000000000000000000000000000000dEaD"
-//             {
-//                 reasons.push("Token burn transaction".to_string());
-//             }
-//         }
-
-//         if let Some(to) = &tx.to {
-//             let seen_contracts = storage
-//                 .by_sender
-//                 .get(&tx.from)
-//                 .map(|txs| txs.iter().filter_map(|t| t.to.clone()).collect::<Vec<_>>())
-//                 .unwrap_or_default();
-//             if !seen_contracts.contains(to) {
-//                 reasons.push(format!("Interaction with new contract: {}", to));
-//             }
-//         }
-
-//         if let Some(to) = &tx.to {
-//             let count = storage.by_reciever.get(to).map(|v| v.len()).unwrap_or(0);
-//             if count < 3 {
-//                 reasons.push(format!("Interaction with low-activity contract: {}", to));
-//             }
-//         }
-
-//         let timestamp = DateTime::parse_from_rfc3339(&tx.timestamp)
-//             .unwrap_or_else(|_| Utc::now().into())
-//             .with_timezone(&Utc);
-//         if reasons.len() > 3 {
-//             anomalies.push(Anomaly::UnusualOp {
-//                 tx_hash: tx.hash.clone(),
-//                 reasons: reasons,
-//                 severity: Severity::Strong,
-//                 timestamp: timestamp
-//             });
-//         } else {
-//             anomalies.push(Anomaly::UnusualOp {
-//                 tx_hash: tx.hash.clone(),
-//                 reasons: reasons,
-//                 severity: Severity::Weak,
-//                 timestamp: timestamp
-//             });
-//         }
-//     }
-
-//     anomalies
-// }
 pub async fn detect_unusual_op(
     storage: &SharedTxStorage
 ) -> Vec<Anomaly> {
     let all_txs = storage.all_txs.read().await;
     let mut anomalies = Vec::new();
 
-    // Статистика для value и gas
     let values = all_txs.iter().map(|tx| tx.value).collect();
     let gas_prices = all_txs.iter().map(|tx| tx.gas_price_gwei).collect();
 
@@ -332,7 +263,6 @@ pub async fn detect_unusual_op(
     let gas_threshold = percentile(&gas_prices);
 
     for tx in all_txs.iter() {
-        // Пропускаем транзакции, которые уже попали в другие аномалии
         let flagged_hashes = FLAGGED_HASHES.read().await;
         if flagged_hashes.contains(&tx.hash) {
             continue;
@@ -447,7 +377,6 @@ pub async fn detect_regular_payments(storage: &SharedTxStorage) -> Vec<BusinessP
             }
 
             if intervals.len() > 0 {
-                // let avg_interval = intervals.iter().sum::<i64>() / intervals.len() as i64;
                 let mut sum_deviation = 0.0;
                 let total: f64 = sorted.iter().map(|tx| tx.value).fold(0.0, |acc, x| acc + x);
                 let avg_value = total / sorted.len() as f64;
@@ -717,8 +646,3 @@ fn local_mean_fee(storage: &SharedTxStorage, sender: &str) -> f64 {
         })
         .unwrap_or(0.0)
 }
-
-// pub fn load_blacklist(path: &str) -> HashSet<String> {
-//     let data = fs::read_to_string(path).expect("Failed to read blacklist file");
-//     serde_json::from_str(&data).expect("Invalid blacklist JSON format")
-// }

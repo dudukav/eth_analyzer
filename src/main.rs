@@ -13,6 +13,7 @@ use analize::{
 use csv::{export_anomalies_csv, export_patterns_csv};
 use ethers::prelude::*;
 use ethers::providers::{Http, Middleware, Provider};
+use log::{info, error};
 use models::TxStorage;
 use scanner::scan_block;
 use std::{collections::HashSet, env, sync::Arc};
@@ -40,18 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rpc_url = "https://mainnet.infura.io/v3/aeadc00d6e1d4e25b3ecbe34617e1165";
     let provider = Arc::new(Provider::<Http>::try_from(rpc_url)?);
-    // let client = Arc::new(&provider);
     let last_block = provider.get_block_number().await?.as_u64();
     let start_block = last_block - 10;
     let end_block = last_block;
-
-    // let uniswap_v2_factory_addr: Address = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f".parse()?;
     let uniswap_v2_router: Address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D".parse()?;
-    // let uniswap_v2_factory = UniswapV2Factory::new(uniswap_v2_factory_addr, Arc::clone(&client));
-
-    // let sushiswap_factory_addr: Address = "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac".parse()?;
     let sushiswap_router: Address = "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F".parse()?;
-    // et sushiswap_factory = UniswapV2Factory::new(sushiswap_factory_addr, Arc::clone(&client));
 
     let mut dex_routers = HashSet::new();
     dex_routers.insert(uniswap_v2_router);
@@ -60,24 +54,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let storage = Arc::new(TxStorage::new());
     let _records = scan_block(&provider, start_block, end_block, &storage).await;
     let all_txs = storage.all_txs.read().await;
-    println!("Всего транзакций: {}", all_txs.len());
-    // for tx in all_txs.iter().take(5) { // показываем первые 5
-    //     println!("TX: {} from {} to {:?}", tx.hash, tx.from, tx.to);
-    // }
+    info!("Total transactions: {}", all_txs.len());
 
     let large_tx = detect_large_tx(&storage).await;
-    // println!("Аномалилй с большой суммой: {}", large_tx.len());
+    info!("Large transactions anomaly count: {}", large_tx.len());
     let high_frequency = detect_high_frequency(&storage).await;
-    // println!("Аномалилй большого количества транзакций: {}", high_frequency.len());
+    info!("High Frequency anomaly count: {}", high_frequency.len());
     let structuring = detect_structuring(&storage).await;
-    //println!("Аномалилй с дроблением: {}", structuring.len());
+    info!("Structuring anomaly count: {}", structuring.len());
     let high_fee = detect_high_fee(&storage).await;
-    //println!("Аномалилй с большой комиссией: {}", high_fee.len());
+    info!("High fee anomaly count: {}", high_fee.len());
     let blacklist_addresses = detect_blacklist_adresses(&storage).await;
+    info!("Blacklist anomaly count: {}", blacklist_addresses.len());
     let unusual_op = detect_unusual_op(&storage).await;
-    //println!("Аномалилй с необычными операциями: {}", unusual_op.len());
+    info!("Unusual operations anomaly count: {}", unusual_op.len());
     let time_anomaly = detect_time_anomalies(&storage).await;
-    //println!("Аномалилй по времени: {}", time_anomaly.len());
+    info!("Time anomaly count: {}", time_anomaly.len());
 
     let project_dir = env::current_dir().unwrap();
     let file_path = project_dir.join("anomalies.csv");
@@ -90,21 +82,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     anomalies.extend(unusual_op);
     anomalies.extend(time_anomaly);
 
-    println!("Количество аномалий: {}", anomalies.len());
+    info!("Anomaly count: {}", anomalies.len());
 
-    let _ = export_anomalies_csv(&anomalies, file_path.to_str().unwrap()).map_err(|e| println!("Ошибка записи CSV: {:?}", e))
-    .ok();
+    if let Err(e) = export_anomalies_csv(&anomalies, file_path.to_str().unwrap()) {
+        error!("Error CSV writing: {:?}", e);
+    } else {
+        info!("Anomalies succesfully exported to CSV");
+    }
     
 
     let file_path = project_dir.join("patterns.csv");
     let regular_payments = detect_regular_payments(&storage).await;
+    info!("Regular payments pattern count: {}", regular_payments.len());
     let batch_payments = detect_batch_payments(&storage).await;
+    info!("Batch Payments pattern count: {}", batch_payments.len());
     let dex_trade = detect_dex_trade(&storage, &dex_routers).await;
+    info!("DEX trade pattern count: {}", dex_trade.len());
     let nft_activity = detect_nft_activity(&storage).await;
+    info!("NFT activity pattern count: {}", nft_activity.len());
     let liquiditi_provider = detect_liquid_provider(&storage, &dex_routers).await;
+    info!("Liquidity provider pattern count: {}", liquiditi_provider.len());
     let active_traders = detect_active_traders(&storage, &dex_routers).await;
+    info!("Active Traders pattern count: {}", active_traders.len());
     let arbitrage = detect_arbitrage(&storage, &dex_routers).await;
+    info!("Arbitrage pattern count: {}", arbitrage.len());
     let whales = detect_whales(&storage).await;
+    info!("Whales pattern count: {}", whales.len());
 
     let mut patterns = Vec::new();
     patterns.extend(regular_payments);
@@ -116,17 +119,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     patterns.extend(arbitrage);
     patterns.extend(whales);
 
-    println!("Количество паттернов: {}", patterns.len());
+    info!("Pattern count: {}", patterns.len());
 
-    let _ = export_patterns_csv(&patterns, file_path.to_str().unwrap()).map_err(|e| println!("Ошибка записи CSV: {:?}", e))
-    .ok();
+    if let Err(e) = export_patterns_csv(&patterns, file_path.to_str().unwrap()) {
+        error!("Error CSV writing: {:?}", e);
+    } else {
+        info!("Patterns succesfully exported to CSV");
+    }
 
     let project_dir = env::current_dir()?;
     let anomalies_path = project_dir.join("anomalies.csv");
     let patterns_path = project_dir.join("patterns.csv");
 
-    // Вызов Python скрипта
-    let viz_path = project_dir.join("src/viz.py"); // путь к Python скрипту
+    let viz_path = project_dir.join("src/viz.py");
     let _python_path = project_dir.join("venv/bin/python3");
     let status = Command::new("python3")
         .arg(viz_path.to_str().unwrap())
@@ -134,10 +139,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(patterns_path.to_str().unwrap())
         .status()?;
 
-    if !status.success() {
-        eprintln!("Ошибка при запуске визуализации!");
-    } else {
-        println!("Графики успешно созданы!");
+    match status.success() {
+        true => info!("Plotter succesfully created!"),
+        false => error!("Error")
     }
 
     Ok(())

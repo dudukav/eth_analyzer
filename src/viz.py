@@ -28,6 +28,21 @@ sns.despine()
 plt.tight_layout()
 plt.show()
 
+#  график закономерностей
+patterns_df = pd.read_csv(patterns_path)
+pattern_counts = patterns_df['type_name'].value_counts().reset_index()
+pattern_counts.columns = ['type_name', 'count']
+
+plt.figure(figsize=(12,6))
+sns.barplot(data=pattern_counts, x='type_name', y='count', palette='Set2')
+plt.xticks(rotation=45, ha='right')
+plt.title("Количество бизнес-паттернов по типу")
+plt.xlabel("Тип бизнес-паттерна")
+plt.ylabel("Количество")
+sns.despine()
+plt.tight_layout()
+plt.show()
+
 # График всплесков аномалий по типу
 anomalies['timestamp'] = pd.to_datetime(anomalies['timestamp'], utc=True, errors='coerce')
 anomalies_clean = anomalies.dropna(subset=['timestamp'])
@@ -51,6 +66,7 @@ fig2 = px.line(
 
 fig2.update_traces(mode='lines+markers')
 fig2.show()
+
 
 # Граф подозрительных сязей
 # exploded = anomalies.explode('receivers')

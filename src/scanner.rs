@@ -3,11 +3,54 @@ use chrono::{DateTime, Utc};
 use ethers::{providers::Middleware, utils::hex};
 use futures::stream::{FuturesUnordered, StreamExt};
 use log::info;
-use std::sync::Arc;
 use reqwest;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::sync::Arc;
 
+/// Scans a range of blockchain blocks and stores their transactions in `TxStorage`.
+///
+/// This asynchronous function iterates over blocks from `start_block` to `end_block`
+/// (inclusive), retrieves all transactions in each block using the provided `provider`,
+/// converts them into [`TransactionRecord`]s, and stores them in a shared
+/// [`TxStorage`] instance.
+///
+/// Transactions are stored in three ways:
+/// 1. Globally in `storage.all_txs` (protected by a `RwLock`).
+/// 2. Indexed by sender in `storage.by_sender` (`DashMap`).
+/// 3. Indexed by receiver in `storage.by_reciever` (`DashMap`), if a `to` address exists.
+///
+/// The function processes multiple blocks concurrently using `FuturesUnordered`
+/// for efficient asynchronous execution.
+///
+/// # Parameters
+/// * `provider` – A reference-counted Ethereum provider implementing [`Middleware`].
+/// * `start_block` – The starting block number (inclusive) to scan.
+/// * `end_block` – The ending block number (inclusive) to scan.
+/// * `storage` – Shared transaction storage (`SharedTxStorage`) for storing results.
+///
+/// # Returns
+/// Returns `Result<(), M::Error>`:
+/// * `Ok(())` on success.
+/// * Propagates any errors from the provider.
+///
+/// # Notes
+/// * The block timestamp is converted to UTC and stored in RFC 3339 format in each `TransactionRecord`.
+/// * Gas prices and values are converted from Wei to ETH/Gwei using helper functions (`wei_to_eth`, `wei_to_gwei`).
+/// * This function clones the provider and storage references for each concurrent block scan.
+/// * Transaction hashes, addresses, and input data are converted to string representations.
+/// * The function uses `futures::stream::FuturesUnordered` to run multiple block fetches in parallel.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let provider = Arc::new(your_provider);
+/// let storage = Arc::new(TxStorage::new());
+/// scan_block(&provider, 1000, 1010, &storage).await.unwrap();
+/// ```
+///
+/// # Panics
+/// * Panics if the block timestamp cannot be converted to a valid `DateTime<Utc>`.
 pub async fn scan_block<M>(
     provider: &Arc<M>,
     start_block: u64,
@@ -79,7 +122,6 @@ where
     Ok(())
 }
 
-
 #[derive(Deserialize)]
 struct SanctionedAddress {
     address: String,
@@ -97,9 +139,6 @@ pub async fn fetch_sanctioned_addresses() -> Result<HashSet<String>, reqwest::Er
         Ok(HashSet::new())
     }
 }
-
-
-
 
 fn wei_to_eth(wei: u128) -> f64 {
     wei as f64 / 1e18

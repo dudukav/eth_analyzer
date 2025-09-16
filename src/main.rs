@@ -13,11 +13,11 @@ use analize::{
 use csv::{export_anomalies_csv, export_patterns_csv};
 use ethers::prelude::*;
 use ethers::providers::{Http, Middleware, Provider};
-use log::{info, error};
+use log::{error, info};
 use models::TxStorage;
 use scanner::scan_block;
-use std::{collections::HashSet, env, sync::Arc};
 use std::process::Command;
+use std::{collections::HashSet, env, sync::Arc};
 
 abigen!(
     UniswapV2Factory,
@@ -89,7 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         info!("Anomalies succesfully exported to CSV");
     }
-    
 
     let file_path = project_dir.join("patterns.csv");
     let regular_payments = detect_regular_payments(&storage).await;
@@ -101,7 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nft_activity = detect_nft_activity(&storage).await;
     info!("NFT activity pattern count: {}", nft_activity.len());
     let liquiditi_provider = detect_liquid_provider(&storage, &dex_routers).await;
-    info!("Liquidity provider pattern count: {}", liquiditi_provider.len());
+    info!(
+        "Liquidity provider pattern count: {}",
+        liquiditi_provider.len()
+    );
     let active_traders = detect_active_traders(&storage, &dex_routers).await;
     info!("Active Traders pattern count: {}", active_traders.len());
     let arbitrage = detect_arbitrage(&storage, &dex_routers).await;
@@ -141,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match status.success() {
         true => info!("Plotter succesfully created!"),
-        false => error!("Error")
+        false => error!("Error"),
     }
 
     Ok(())
